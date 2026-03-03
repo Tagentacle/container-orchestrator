@@ -1,0 +1,13 @@
+[package]
+name = "container_orchestrator"
+version = "0.1.0"
+description = "Container lifecycle management — create, stop, list, exec via Docker/Podman API"
+authors = ["Tagentacle Contributors"]
+type = "executable"
+
+[entry_points]
+node = "orchestrator:main"
+
+[dependencies]
+python = ["tagentacle-py-core"]
+system = ["docker"]

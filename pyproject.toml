@@ -1,0 +1,12 @@
+[project]
+name = "container-orchestrator"
+version = "0.1.0"
+description = "Container lifecycle management node for Tagentacle — create, stop, exec via Docker/Podman"
+requires-python = ">=3.10"
+dependencies = [
+    "tagentacle-py-core>=0.1.0",
+    "docker>=7.0.0",
+]
+
+[tool.uv.sources]
+tagentacle-py-core = { path = "../python-sdk-core", editable = true }
