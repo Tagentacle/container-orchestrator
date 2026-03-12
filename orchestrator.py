@@ -1,14 +1,15 @@
 """
-Tagentacle Container Orchestrator: Docker/Podman Lifecycle Management.
+Tagentacle Container Orchestrator: Container Lifecycle Management.
 
-A LifecycleNode that manages container lifecycles via the Docker API and exposes
-them as Tagentacle bus Services. This is an ecosystem package — the Daemon knows
-nothing about containers; orchestration lives entirely in userspace.
+A LifecycleNode that manages container lifecycles via a pluggable container
+runtime (Podman or Docker) and exposes them as Tagentacle bus Services.
+This is an ecosystem package — the Daemon knows nothing about containers;
+orchestration lives entirely in userspace.
 
 Bootstrap flow:
   1. Daemon starts (TCP 19999)
   2. This orchestrator starts as a bare process, connects to Daemon
-  3. Orchestrator creates/manages containers via Docker API
+  3. Orchestrator creates/manages containers via Podman/Docker API
   4. Containerized nodes connect back to Daemon via TCP
 
 Services provided:
@@ -25,8 +26,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-import docker
-from docker.errors import DockerException, NotFound, APIError
+from container_runtime import ContainerRuntime
 
 from tagentacle_py_core import LifecycleNode
 
@@ -40,33 +40,32 @@ MANAGED_LABEL = "tagentacle.managed"
 class ContainerOrchestrator(LifecycleNode):
     """Container lifecycle manager node.
 
-    Connects to the local Docker daemon and exposes container CRUD + exec
-    as Tagentacle bus Services. All containers created by this orchestrator
-    are labeled with ``tagentacle.managed=true`` for easy filtering.
+    Connects to a container runtime (Podman or Docker) and exposes container
+    CRUD + exec as Tagentacle bus Services. All containers created by this
+    orchestrator are labeled with ``tagentacle.managed=true`` for easy filtering.
     """
 
     def __init__(self, node_id: str = "container_orchestrator"):
         super().__init__(node_id)
-        self.docker: Optional[docker.DockerClient] = None
+        self.runtime: Optional[ContainerRuntime] = None
 
     # ── Lifecycle hooks ──────────────────────────────────────────────
 
     def on_configure(self, config: Dict[str, Any]):
-        """Connect to Docker daemon."""
-        docker_url = config.get("docker_url") or os.environ.get("DOCKER_HOST")
+        """Connect to container runtime (auto-detects Podman or Docker)."""
+        runtime_url = config.get("runtime_url") or os.environ.get("CONTAINER_HOST") or os.environ.get("DOCKER_HOST")
+        backend = config.get("runtime_backend") or os.environ.get("CONTAINER_RUNTIME")
+
         try:
-            if docker_url:
-                self.docker = docker.DockerClient(base_url=docker_url)
-            else:
-                self.docker = docker.from_env()
-            info = self.docker.info()
+            self.runtime = ContainerRuntime.connect(url=runtime_url, backend=backend)
+            info = self.runtime.info()
             logger.info(
-                f"Docker connected: {info.get('Name', '?')} "
+                f"{self.runtime.backend.capitalize()} connected: {info.get('Name', '?')} "
                 f"(containers: {info.get('Containers', '?')}, "
                 f"images: {info.get('Images', '?')})"
             )
-        except DockerException as e:
-            logger.error(f"Failed to connect to Docker: {e}")
+        except RuntimeError as e:
+            logger.error(f"Failed to connect to container runtime: {e}")
             raise
 
     def on_activate(self):
@@ -74,13 +73,10 @@ class ContainerOrchestrator(LifecycleNode):
         pass  # Services are registered via decorators below
 
     def on_shutdown(self):
-        """Close Docker client."""
-        if self.docker:
-            try:
-                self.docker.close()
-            except Exception:
-                pass
-            self.docker = None
+        """Close container runtime client."""
+        if self.runtime:
+            self.runtime.close()
+            self.runtime = None
         logger.info("Container orchestrator shut down.")
 
     # ── Bus Services ─────────────────────────────────────────────────
@@ -124,13 +120,13 @@ class ContainerOrchestrator(LifecycleNode):
                 None, self._exec_in_container, payload
             )
 
-    # ── Docker operations (sync, run in executor) ────────────────────
+    # ── Container operations (sync, run in executor) ────────────────────
 
     def _create_container(self, payload: dict) -> dict:
         """Create and start a container.
 
         Request payload:
-            image: str          — Docker image (required)
+            image: str          — Container image (required)
             name: str           — Container name (optional)
             env: dict           — Environment variables (optional)
             volumes: dict       — Volume binds {host_path: {"bind": path, "mode": "rw"}} (optional)
@@ -157,7 +153,7 @@ class ContainerOrchestrator(LifecycleNode):
         labels.update(extra_labels)
 
         try:
-            container = self.docker.containers.run(
+            info = self.runtime.create(
                 image,
                 command=command,
                 name=name,
@@ -165,20 +161,15 @@ class ContainerOrchestrator(LifecycleNode):
                 volumes=volumes,
                 network_mode=network_mode,
                 labels=labels,
-                detach=True,
-                stdin_open=True,
             )
-            logger.info(f"Created container '{container.name}' ({container.short_id}) from {image}")
+            logger.info(f"Created container '{info.name}' ({info.short_id}) from {image}")
             return {
                 "status": "created",
-                "id": container.id,
-                "short_id": container.short_id,
-                "name": container.name,
+                "id": info.id,
+                "short_id": info.short_id,
+                "name": info.name,
                 "image": image,
             }
-        except APIError as e:
-            logger.error(f"Docker API error creating container: {e}")
-            return {"error": str(e)}
         except Exception as e:
             logger.error(f"Failed to create container: {e}")
             return {"error": str(e)}
@@ -194,13 +185,10 @@ class ContainerOrchestrator(LifecycleNode):
 
         timeout = payload.get("timeout", 10)
         try:
-            container = self.docker.containers.get(cid)
-            container.stop(timeout=timeout)
+            self.runtime.stop(cid, timeout=timeout)
             logger.info(f"Stopped container '{cid}'")
-            return {"status": "stopped", "name": container.name, "id": container.id}
-        except NotFound:
-            return {"error": f"Container '{cid}' not found"}
-        except APIError as e:
+            return {"status": "stopped", "id": cid}
+        except Exception as e:
             return {"error": str(e)}
 
     def _remove_container(self, payload: dict) -> dict:
@@ -214,13 +202,10 @@ class ContainerOrchestrator(LifecycleNode):
 
         force = payload.get("force", False)
         try:
-            container = self.docker.containers.get(cid)
-            container.remove(force=force)
+            self.runtime.remove(cid, force=force)
             logger.info(f"Removed container '{cid}'")
-            return {"status": "removed", "name": container.name, "id": container.id}
-        except NotFound:
-            return {"error": f"Container '{cid}' not found"}
-        except APIError as e:
+            return {"status": "removed", "id": cid}
+        except Exception as e:
             return {"error": str(e)}
 
     def _list_containers(self, payload: dict) -> dict:
@@ -231,19 +216,19 @@ class ContainerOrchestrator(LifecycleNode):
         show_all = payload.get("all", False)
         try:
             filters = {"label": MANAGED_LABEL}
-            containers = self.docker.containers.list(all=show_all, filters=filters)
+            containers = self.runtime.list(all=show_all, filters=filters)
             result = []
             for c in containers:
                 result.append({
                     "id": c.id,
                     "short_id": c.short_id,
                     "name": c.name,
-                    "image": str(c.image.tags[0]) if c.image.tags else str(c.image.id[:12]),
+                    "image": c.image,
                     "status": c.status,
-                    "labels": dict(c.labels),
+                    "labels": c.labels,
                 })
             return {"containers": result, "count": len(result)}
-        except APIError as e:
+        except Exception as e:
             return {"error": str(e)}
 
     def _inspect_container(self, payload: dict) -> dict:
@@ -256,8 +241,7 @@ class ContainerOrchestrator(LifecycleNode):
             return {"error": "Missing 'name' or 'id'"}
 
         try:
-            container = self.docker.containers.get(cid)
-            attrs = container.attrs
+            attrs = self.runtime.inspect(cid)
             return {
                 "id": attrs.get("Id", ""),
                 "name": attrs.get("Name", "").lstrip("/"),
@@ -269,9 +253,7 @@ class ContainerOrchestrator(LifecycleNode):
                 "network_mode": attrs.get("HostConfig", {}).get("NetworkMode", ""),
                 "ports": attrs.get("NetworkSettings", {}).get("Ports", {}),
             }
-        except NotFound:
-            return {"error": f"Container '{cid}' not found"}
-        except APIError as e:
+        except Exception as e:
             return {"error": str(e)}
 
     def _exec_in_container(self, payload: dict) -> dict:
@@ -292,26 +274,18 @@ class ContainerOrchestrator(LifecycleNode):
 
         workdir = payload.get("workdir")
         env_vars = payload.get("env", {})
-
-        # Convert command string to shell invocation
-        if isinstance(command, str):
-            cmd = ["sh", "-c", command]
-        else:
-            cmd = command
-
-        # Build env list
         environment = {k: str(v) for k, v in env_vars.items()} if env_vars else None
 
         try:
-            container = self.docker.containers.get(cid)
-            exit_code, output = container.exec_run(
-                cmd,
+            result = self.runtime.exec(
+                cid,
+                command,
                 workdir=workdir,
                 environment=environment,
-                demux=True,
             )
-            stdout = output[0].decode("utf-8", errors="replace") if output[0] else ""
-            stderr = output[1].decode("utf-8", errors="replace") if output[1] else ""
+
+            stdout = result.stdout
+            stderr = result.stderr
 
             # Truncate very large outputs
             max_len = 64 * 1024  # 64 KB
@@ -321,13 +295,11 @@ class ContainerOrchestrator(LifecycleNode):
                 stderr = stderr[:max_len] + "\n... (truncated)"
 
             return {
-                "exit_code": exit_code,
+                "exit_code": result.exit_code,
                 "stdout": stdout,
                 "stderr": stderr,
             }
-        except NotFound:
-            return {"error": f"Container '{cid}' not found"}
-        except APIError as e:
+        except Exception as e:
             return {"error": str(e)}
 
 
@@ -338,13 +310,17 @@ async def main():
     await node._register_services()
 
     config = {}
-    docker_url = os.environ.get("DOCKER_HOST")
-    if docker_url:
-        config["docker_url"] = docker_url
+    # Support explicit runtime configuration
+    runtime_url = os.environ.get("CONTAINER_HOST") or os.environ.get("DOCKER_HOST")
+    if runtime_url:
+        config["runtime_url"] = runtime_url
+    runtime_backend = os.environ.get("CONTAINER_RUNTIME")
+    if runtime_backend:
+        config["runtime_backend"] = runtime_backend
 
     await node.bringup(config)
     logger.info(
-        "Container Orchestrator ready. "
+        f"Container Orchestrator ready (backend: {node.runtime.backend}). "
         "Services: /containers/create, /containers/stop, /containers/remove, "
         "/containers/list, /containers/inspect, /containers/exec"
     )
