@@ -1,8 +1,8 @@
 # container-orchestrator
 
-Container lifecycle management node for Tagentacle. Manages Docker/Podman containers via the bus — **not** part of the Daemon core.
+Container lifecycle management node for Tagentacle. Manages containers via a pluggable runtime (Podman or Docker) through the bus — **not** part of the Daemon core.
 
-> Like Docker is a userspace program on Linux (not a kernel module), this orchestrator is a Tagentacle ecosystem package (not a Daemon feature).
+> Like container runtimes are userspace programs on Linux (not kernel modules), this orchestrator is a Tagentacle ecosystem package (not a Daemon feature).
 
 ## Services
 
@@ -18,11 +18,13 @@ Container lifecycle management node for Tagentacle. Manages Docker/Podman contai
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Install dependencies (pick one backend)
 cd container-orchestrator
-uv sync
+pip install -e ".[podman]"   # Podman (recommended)
+# or
+pip install -e ".[docker]"   # Docker
 
-# Run (requires Docker daemon running)
+# Run (requires podman/docker daemon running)
 tagentacle run .
 # or directly:
 python orchestrator.py
@@ -57,11 +59,21 @@ tagentacle service call /containers/remove '{"name": "agent_space_1"}'
 - Default network mode: `host` (simplest for bus connectivity)
 - No ACL logic — access control handled by TACL at the MCP layer
 
+## Container Runtime
+
+Uses `container_runtime.py` — a unified abstraction over Podman and Docker.
+
+Backend resolution order:
+1. Explicit `CONTAINER_RUNTIME` env var (`podman` or `docker`)
+2. Auto-detect: try Podman SDK → Docker SDK
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `TAGENTACLE_DAEMON_URL` | `tcp://127.0.0.1:19999` | Daemon address |
+| `CONTAINER_RUNTIME` | _(auto-detect)_ | Force `podman` or `docker` backend |
+| `CONTAINER_HOST` | _(system default)_ | Podman daemon socket URL |
 | `DOCKER_HOST` | _(system default)_ | Docker daemon socket URL |
 
 ## License
