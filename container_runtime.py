@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
@@ -31,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ContainerInfo:
     """Normalized container metadata."""
+
     id: str
     short_id: str
     name: str
@@ -42,6 +42,7 @@ class ContainerInfo:
 @dataclass
 class ExecResult:
     """Result of executing a command in a container."""
+
     exit_code: int
     stdout: str
     stderr: str
@@ -229,14 +230,42 @@ class ContainerRuntime:
             cmd = command
 
         container = self._client.containers.get(container_id)
-        exit_code, output = container.exec_run(
+        result = container.exec_run(
             cmd,
             workdir=workdir,
             environment=environment,
             demux=True,
         )
-        stdout = output[0].decode("utf-8", errors="replace") if output[0] else ""
-        stderr = output[1].decode("utf-8", errors="replace") if output[1] else ""
+
+        # Normalize return format across Docker-py / Podman-py versions.
+        # Docker-py:   (exit_code, (stdout_bytes, stderr_bytes))  when demux=True
+        # Podman-py 4: may return (exit_code, output) or a namedtuple
+        if isinstance(result, tuple) and len(result) == 2:
+            exit_code, output = result
+        else:
+            # Some podman-py versions return an object with .exit_code / .output
+            exit_code = getattr(result, "exit_code", 1)
+            output = getattr(result, "output", (b"", b""))
+
+        def _decode(data) -> str:
+            if data is None:
+                return ""
+            if isinstance(data, bytes):
+                return data.decode("utf-8", errors="replace")
+            if isinstance(data, str):
+                return data
+            return str(data)
+
+        if isinstance(output, tuple) and len(output) >= 2:
+            stdout = _decode(output[0])
+            stderr = _decode(output[1])
+        elif isinstance(output, bytes):
+            stdout = _decode(output)
+            stderr = ""
+        else:
+            stdout = _decode(output)
+            stderr = ""
+
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     def get(self, container_id: str):
@@ -270,11 +299,21 @@ class ContainerRuntime:
         except Exception:
             image_str = "unknown"
 
+        # container.status can crash on podman-py 4.x when State is a string
+        try:
+            status = container.status
+        except (TypeError, KeyError, AttributeError):
+            try:
+                state = container.attrs.get("State", "unknown")
+                status = state if isinstance(state, str) else state.get("Status", "unknown")
+            except Exception:
+                status = "unknown"
+
         return ContainerInfo(
             id=container.id,
             short_id=container.short_id,
             name=container.name,
             image=image_str,
-            status=container.status,
+            status=status,
             labels=dict(container.labels or {}),
         )

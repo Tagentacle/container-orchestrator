@@ -8,8 +8,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-podman = ["podman>=5.0.0"]
+podman = ["podman>=4.0.0,<5.0.0"]
 docker = ["docker>=7.0.0"]
 
 [tool.uv.sources]
 tagentacle-py-core = { path = "../python-sdk-core", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

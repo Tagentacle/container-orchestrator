@@ -53,7 +53,11 @@ class ContainerOrchestrator(LifecycleNode):
 
     def on_configure(self, config: Dict[str, Any]):
         """Connect to container runtime (auto-detects Podman or Docker)."""
-        runtime_url = config.get("runtime_url") or os.environ.get("CONTAINER_HOST") or os.environ.get("DOCKER_HOST")
+        runtime_url = (
+            config.get("runtime_url")
+            or os.environ.get("CONTAINER_HOST")
+            or os.environ.get("DOCKER_HOST")
+        )
         backend = config.get("runtime_backend") or os.environ.get("CONTAINER_RUNTIME")
 
         try:
@@ -162,7 +166,9 @@ class ContainerOrchestrator(LifecycleNode):
                 network_mode=network_mode,
                 labels=labels,
             )
-            logger.info(f"Created container '{info.name}' ({info.short_id}) from {image}")
+            logger.info(
+                f"Created container '{info.name}' ({info.short_id}) from {image}"
+            )
             return {
                 "status": "created",
                 "id": info.id,
@@ -219,14 +225,16 @@ class ContainerOrchestrator(LifecycleNode):
             containers = self.runtime.list(all=show_all, filters=filters)
             result = []
             for c in containers:
-                result.append({
-                    "id": c.id,
-                    "short_id": c.short_id,
-                    "name": c.name,
-                    "image": c.image,
-                    "status": c.status,
-                    "labels": c.labels,
-                })
+                result.append(
+                    {
+                        "id": c.id,
+                        "short_id": c.short_id,
+                        "name": c.name,
+                        "image": c.image,
+                        "status": c.status,
+                        "labels": c.labels,
+                    }
+                )
             return {"containers": result, "count": len(result)}
         except Exception as e:
             return {"error": str(e)}
