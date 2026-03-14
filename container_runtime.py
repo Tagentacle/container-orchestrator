@@ -305,7 +305,9 @@ class ContainerRuntime:
         except (TypeError, KeyError, AttributeError):
             try:
                 state = container.attrs.get("State", "unknown")
-                status = state if isinstance(state, str) else state.get("Status", "unknown")
+                status = (
+                    state if isinstance(state, str) else state.get("Status", "unknown")
+                )
             except Exception:
                 status = "unknown"
 
