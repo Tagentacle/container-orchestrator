@@ -73,8 +73,8 @@ class ContainerOrchestrator(LifecycleNode):
             raise
 
     def on_activate(self):
-        """Register bus services."""
-        pass  # Services are registered via decorators below
+        """Register bus services on activation."""
+        self._register_services()
 
     def on_shutdown(self):
         """Close container runtime client."""
@@ -85,8 +85,8 @@ class ContainerOrchestrator(LifecycleNode):
 
     # ── Bus Services ─────────────────────────────────────────────────
 
-    async def _register_services(self):
-        """Register all /containers/* services after connect."""
+    def _register_services(self):
+        """Register all /containers/* services."""
 
         @self.service("/containers/create")
         async def handle_create(payload: dict) -> dict:
@@ -314,11 +314,7 @@ class ContainerOrchestrator(LifecycleNode):
 async def main():
     node = ContainerOrchestrator()
 
-    # Register services before connect so they get batch-registered
-    await node._register_services()
-
     config = {}
-    # Support explicit runtime configuration
     runtime_url = os.environ.get("CONTAINER_HOST") or os.environ.get("DOCKER_HOST")
     if runtime_url:
         config["runtime_url"] = runtime_url
