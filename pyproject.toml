@@ -12,7 +12,7 @@ podman = ["podman>=4.0.0,<5.0.0"]
 docker = ["docker>=7.0.0"]
 
 [tool.uv.sources]
-tagentacle-py-core = { path = "../python-sdk-core", editable = true }
+tagentacle-py-core = { path = "../tagentacle-py-core", editable = true }
 
 [build-system]
 requires = ["hatchling"]
